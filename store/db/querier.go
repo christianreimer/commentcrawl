@@ -9,8 +9,11 @@ import (
 )
 
 type Querier interface {
+	CountScannedPartitions(ctx context.Context, crawl string) (int64, error)
+	GetMaxScannedPartition(ctx context.Context, crawl string) (int64, error)
 	InsertCandidate(ctx context.Context, arg InsertCandidateParams) error
 	InsertDisqusCandidate(ctx context.Context, arg InsertDisqusCandidateParams) error
+	InsertScanProgress(ctx context.Context, arg InsertScanProgressParams) error
 	ListCandidates(ctx context.Context) ([]WpCandidate, error)
 	ListConfirmedResults(ctx context.Context) ([]Result, error)
 	ListDisqusCandidates(ctx context.Context) ([]DisqusCandidate, error)

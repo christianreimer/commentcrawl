@@ -39,7 +39,8 @@ type DisqusCandidate struct {
 // Options controls WAT-based Disqus discovery.
 type Options struct {
 	Crawl         string // Common Crawl crawl ID, e.g. "CC-MAIN-2024-22"
-	MaxPartitions int    // Number of WAT files to scan (of ~90,000)
+	MaxPartitions int    // Number of WAT files to scan (0 = all)
+	Offset        int    // Partition index to start from (for resuming)
 	Workers       int    // Concurrent WAT file downloads
 }
 
@@ -104,9 +105,9 @@ func FetchWATURLs(ctx context.Context, crawl string, maxPartitions int) ([]strin
 
 	sort.Strings(paths)
 
-	n := maxPartitions
-	if n > len(paths) {
-		n = len(paths)
+	n := len(paths)
+	if maxPartitions > 0 && maxPartitions < n {
+		n = maxPartitions
 	}
 
 	urls := make([]string, n)
@@ -309,65 +310,31 @@ func extractRegisteredDomain(hostname string) string {
 	return parts[len(parts)-2] + "." + parts[len(parts)-1]
 }
 
+// PartitionResult contains the results of scanning a single WAT partition.
+type PartitionResult struct {
+	Index      int               // Partition index in the full URL list
+	URL        string            // WAT file URL
+	Candidates []DisqusCandidate // Candidates found in this partition
+	Err        error             // Non-nil if scanning failed
+}
+
 // Discover scans WAT files from Common Crawl and returns deduplicated
 // Disqus candidates. The onPartition callback is invoked after each WAT
 // file completes with the partition index, total count, and candidates found.
 func Discover(ctx context.Context, opts Options, onPartition func(i, total, found int)) ([]DisqusCandidate, error) {
-	opts.defaults()
-
-	urls, err := FetchWATURLs(ctx, opts.Crawl, opts.MaxPartitions)
+	results, err := DiscoverPartitioned(ctx, opts, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	slog.Info("Disqus discovery — Scanning WAT files",
-		"crawl", opts.Crawl, "partitions", len(urls), "workers", opts.Workers)
-
-	var (
-		mu   sync.Mutex
-		seen = make(map[string]DisqusCandidate)
-		sem  = make(chan struct{}, opts.Workers)
-		wg   sync.WaitGroup
-	)
-
-	for i, watURL := range urls {
-		if ctx.Err() != nil {
-			break
+	seen := make(map[string]DisqusCandidate)
+	for _, r := range results {
+		for _, c := range r.Candidates {
+			if _, exists := seen[c.Domain]; !exists {
+				seen[c.Domain] = c
+			}
 		}
-
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int, u string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			candidates, err := ScanWATFile(ctx, u)
-			if err != nil {
-				slog.Warn("WAT file failed", "n", idx+1, "error", err)
-				if onPartition != nil {
-					onPartition(idx, len(urls), 0)
-				}
-				return
-			}
-
-			mu.Lock()
-			found := 0
-			for _, c := range candidates {
-				if _, exists := seen[c.Domain]; !exists {
-					seen[c.Domain] = c
-					found++
-				}
-			}
-			mu.Unlock()
-
-			slog.Info("WAT partition results", "n", idx+1, "total", len(urls), "found", found)
-			if onPartition != nil {
-				onPartition(idx, len(urls), found)
-			}
-		}(i, watURL)
 	}
-
-	wg.Wait()
 
 	candidates := make([]DisqusCandidate, 0, len(seen))
 	for _, c := range seen {
@@ -376,7 +343,91 @@ func Discover(ctx context.Context, opts Options, onPartition func(i, total, foun
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].Domain < candidates[j].Domain
 	})
-
-	slog.Info("Disqus discovery complete", "unique_candidates", len(candidates))
 	return candidates, nil
+}
+
+// DiscoverPartitioned scans WAT files and calls onResult after each partition
+// completes. The offset field in Options controls which partition index to
+// start from (for resuming). Returns all partition results.
+func DiscoverPartitioned(ctx context.Context, opts Options, onResult func(result PartitionResult, total int)) ([]PartitionResult, error) {
+	opts.defaults()
+
+	// Fetch all URLs (we need the full list for consistent indexing).
+	urls, err := FetchWATURLs(ctx, opts.Crawl, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	// Determine the range of partitions to scan.
+	startIdx := opts.Offset
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if startIdx >= len(urls) {
+		slog.Info("Offset beyond available partitions", "offset", startIdx, "total", len(urls))
+		return nil, nil
+	}
+
+	endIdx := len(urls)
+	if opts.MaxPartitions > 0 && startIdx+opts.MaxPartitions < endIdx {
+		endIdx = startIdx + opts.MaxPartitions
+	}
+
+	scanURLs := urls[startIdx:endIdx]
+
+	slog.Info("Disqus discovery — Scanning WAT files",
+		"crawl", opts.Crawl, "offset", startIdx, "count", len(scanURLs),
+		"total_available", len(urls), "workers", opts.Workers)
+
+	var (
+		mu      sync.Mutex
+		results []PartitionResult
+		sem     = make(chan struct{}, opts.Workers)
+		wg      sync.WaitGroup
+	)
+
+	for i, watURL := range scanURLs {
+		if ctx.Err() != nil {
+			break
+		}
+
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(localIdx int, absIdx int, u string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			candidates, err := ScanWATFile(ctx, u)
+
+			pr := PartitionResult{
+				Index:      absIdx,
+				URL:        u,
+				Candidates: candidates,
+				Err:        err,
+			}
+
+			if err != nil {
+				slog.Warn("WAT file failed", "partition", absIdx, "error", err)
+			} else {
+				slog.Info("WAT partition scanned",
+					"partition", absIdx, "of", len(urls),
+					"found", len(candidates))
+			}
+
+			mu.Lock()
+			results = append(results, pr)
+			mu.Unlock()
+
+			if onResult != nil {
+				onResult(pr, len(urls))
+			}
+		}(i, startIdx+i, watURL)
+	}
+
+	wg.Wait()
+
+	slog.Info("Disqus discovery batch complete",
+		"partitions_scanned", len(results),
+		"offset", startIdx, "end", endIdx)
+	return results, nil
 }

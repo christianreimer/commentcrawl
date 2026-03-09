@@ -25,6 +25,22 @@ func verifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify-wp",
 		Short: "Verify WordPress domains and find pages with comments",
+		Long: `Reads unverified WordPress candidate domains from the database and
+checks each one for a working WP REST API comments endpoint. Domains
+with confirmed comments are saved back with their comment counts and
+sample pages.
+
+Run discover-wp first to populate the candidate list.
+
+Examples:
+  # Verify all unverified domains in the default database
+  commentcrawl verify-wp
+
+  # Use more workers for faster verification
+  commentcrawl verify-wp --workers 30 --timeout 5s
+
+  # Verify domains in a specific database
+  commentcrawl verify-wp --db results.db`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 

@@ -141,6 +141,67 @@ func (d *DB) InsertDisqusCandidates(ctx context.Context, candidates []DisqusCand
 	return tx.Commit()
 }
 
+// InsertDisqusCandidatesWithProgress writes candidates and records scan progress
+// for a partition in a single transaction.
+func (d *DB) InsertDisqusCandidatesWithProgress(ctx context.Context, candidates []DisqusCandidate, crawl string, partitionIdx int, partitionURL string) error {
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	q := d.queries.WithTx(tx)
+	for _, c := range candidates {
+		if err := q.InsertDisqusCandidate(ctx, db.InsertDisqusCandidateParams{
+			Domain:          c.Domain,
+			Hostname:        c.Hostname,
+			SampleUrl:       c.SampleURL,
+			DisqusShortname: c.DisqusShortname,
+		}); err != nil {
+			return err
+		}
+	}
+
+	if err := q.InsertScanProgress(ctx, db.InsertScanProgressParams{
+		Crawl:           crawl,
+		PartitionIdx:    int64(partitionIdx),
+		PartitionUrl:    partitionURL,
+		CandidatesFound: int64(len(candidates)),
+	}); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// RecordScanProgress records that a partition was scanned (even if it found nothing or failed).
+func (d *DB) RecordScanProgress(ctx context.Context, crawl string, partitionIdx int, partitionURL string, found int) error {
+	return d.queries.InsertScanProgress(ctx, db.InsertScanProgressParams{
+		Crawl:           crawl,
+		PartitionIdx:    int64(partitionIdx),
+		PartitionUrl:    partitionURL,
+		CandidatesFound: int64(found),
+	})
+}
+
+// GetMaxScannedPartition returns the highest partition index scanned for a crawl, or -1 if none.
+func (d *DB) GetMaxScannedPartition(ctx context.Context, crawl string) (int, error) {
+	maxIdx, err := d.queries.GetMaxScannedPartition(ctx, crawl)
+	if err != nil {
+		return -1, err
+	}
+	return int(maxIdx), nil
+}
+
+// CountScannedPartitions returns the number of partitions scanned for a crawl.
+func (d *DB) CountScannedPartitions(ctx context.Context, crawl string) (int, error) {
+	cnt, err := d.queries.CountScannedPartitions(ctx, crawl)
+	if err != nil {
+		return 0, err
+	}
+	return int(cnt), nil
+}
+
 // ReadUnverifiedDomains returns WP candidate domains that have no result row yet.
 func (d *DB) ReadUnverifiedDomains(ctx context.Context) ([]string, error) {
 	return d.queries.ListUnverifiedDomains(ctx)

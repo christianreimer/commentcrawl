@@ -9,6 +9,32 @@ import (
 	"context"
 )
 
+const countScannedPartitions = `-- name: CountScannedPartitions :one
+SELECT COUNT(*) AS cnt
+FROM disqus_scan_progress
+WHERE crawl = ?
+`
+
+func (q *Queries) CountScannedPartitions(ctx context.Context, crawl string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countScannedPartitions, crawl)
+	var cnt int64
+	err := row.Scan(&cnt)
+	return cnt, err
+}
+
+const getMaxScannedPartition = `-- name: GetMaxScannedPartition :one
+SELECT CAST(COALESCE(MAX(partition_idx), -1) AS INTEGER) AS max_idx
+FROM disqus_scan_progress
+WHERE crawl = ?
+`
+
+func (q *Queries) GetMaxScannedPartition(ctx context.Context, crawl string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getMaxScannedPartition, crawl)
+	var max_idx int64
+	err := row.Scan(&max_idx)
+	return max_idx, err
+}
+
 const insertDisqusCandidate = `-- name: InsertDisqusCandidate :exec
 INSERT OR IGNORE INTO disqus_candidates (domain, hostname, sample_url, disqus_shortname)
 VALUES (?, ?, ?, ?)
@@ -27,6 +53,28 @@ func (q *Queries) InsertDisqusCandidate(ctx context.Context, arg InsertDisqusCan
 		arg.Hostname,
 		arg.SampleUrl,
 		arg.DisqusShortname,
+	)
+	return err
+}
+
+const insertScanProgress = `-- name: InsertScanProgress :exec
+INSERT OR REPLACE INTO disqus_scan_progress (crawl, partition_idx, partition_url, candidates_found)
+VALUES (?, ?, ?, ?)
+`
+
+type InsertScanProgressParams struct {
+	Crawl           string `json:"crawl"`
+	PartitionIdx    int64  `json:"partition_idx"`
+	PartitionUrl    string `json:"partition_url"`
+	CandidatesFound int64  `json:"candidates_found"`
+}
+
+func (q *Queries) InsertScanProgress(ctx context.Context, arg InsertScanProgressParams) error {
+	_, err := q.db.ExecContext(ctx, insertScanProgress,
+		arg.Crawl,
+		arg.PartitionIdx,
+		arg.PartitionUrl,
+		arg.CandidatesFound,
 	)
 	return err
 }

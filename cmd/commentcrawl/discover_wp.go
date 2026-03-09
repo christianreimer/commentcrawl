@@ -20,6 +20,19 @@ func discoverCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "discover-wp",
 		Short: "Discover WordPress domains from Common Crawl",
+		Long: `Scans Common Crawl Parquet index files to find domains that use
+WordPress comments. Discovered domains are saved to the SQLite database
+for later verification with the verify-wp command.
+
+Examples:
+  # Scan 5 partitions (default)
+  commentcrawl discover-wp
+
+  # Scan more partitions for broader coverage
+  commentcrawl discover-wp --partitions 50
+
+  # Use a specific crawl and database
+  commentcrawl discover-wp --crawl CC-MAIN-2024-22 --db results.db`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 

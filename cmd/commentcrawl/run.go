@@ -23,6 +23,22 @@ func runCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run both stages: discover WordPress domains then verify comments",
+		Long: `Runs the full WordPress comment discovery pipeline in one shot:
+first discovers candidate domains from Common Crawl, then verifies
+each one for a working comments endpoint.
+
+Equivalent to running discover-wp followed by verify-wp, but in a
+single command without restarting.
+
+Examples:
+  # Run full pipeline with defaults
+  commentcrawl run
+
+  # Scan more partitions with faster verification
+  commentcrawl run --partitions 50 --workers 30
+
+  # Custom crawl and database
+  commentcrawl run --crawl CC-MAIN-2024-22 --db results.db`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 
