@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/creimer/commentcrawl/discovery"
-	"github.com/creimer/commentcrawl/verification"
+	"github.com/christianreimer/commentcrawl/discovery"
+	"github.com/christianreimer/commentcrawl/verification"
 )
 
 func openTestDB(t *testing.T) *DB {
@@ -85,9 +85,8 @@ func TestInsertResults(t *testing.T) {
 			APIRoot:          "https://example.com/wp-json/wp/v2",
 		},
 		{
-			Domain:          "blog.com",
-			DisqusDetected:  true,
-			DisqusShortname: "blogshort",
+			Domain: "blog.com",
+			Error:  "no WordPress API header",
 		},
 	}
 
@@ -124,15 +123,6 @@ func TestReadUnverifiedDomains(t *testing.T) {
 		t.Fatalf("InsertCandidates: %v", err)
 	}
 
-	// Disqus candidates: B (overlap), D
-	disqusCandidates := []DisqusCandidate{
-		{Domain: "b.com", Hostname: "b.com", SampleURL: "https://b.com/post", DisqusShortname: "bshort"},
-		{Domain: "d.com", Hostname: "d.com", SampleURL: "https://d.com/post", DisqusShortname: "dshort"},
-	}
-	if err := db.InsertDisqusCandidates(ctx, disqusCandidates); err != nil {
-		t.Fatalf("InsertDisqusCandidates: %v", err)
-	}
-
 	// Mark A as verified by inserting a result.
 	results := []verification.Result{
 		{Domain: "a.com", WPConfirmed: true, CommentsEndpoint: true, CommentCountHint: 5},
@@ -141,13 +131,13 @@ func TestReadUnverifiedDomains(t *testing.T) {
 		t.Fatalf("InsertResults: %v", err)
 	}
 
-	// Unverified should be B, C, D (sorted).
+	// Unverified should be B, C (sorted).
 	domains, err := db.ReadUnverifiedDomains(ctx)
 	if err != nil {
 		t.Fatalf("ReadUnverifiedDomains: %v", err)
 	}
 
-	expected := []string{"b.com", "c.com", "d.com"}
+	expected := []string{"b.com", "c.com"}
 	if len(domains) != len(expected) {
 		t.Fatalf("got %d domains, want %d: %v", len(domains), len(expected), domains)
 	}
@@ -184,8 +174,6 @@ func TestInsertResultsUpsert(t *testing.T) {
 			CommentsEndpoint: true,
 			CommentCountHint: 99,
 			APIRoot:          "https://example.com/wp-json/wp/v2",
-			DisqusDetected:   true,
-			DisqusShortname:  "exshort",
 		},
 	}
 	if err := db.InsertResults(ctx, second); err != nil {
@@ -193,9 +181,8 @@ func TestInsertResultsUpsert(t *testing.T) {
 	}
 
 	// Verify the second write replaced the first by reading results via the
-	// underlying queries (ListResults is available on the sqlc Queries object,
-	// but we can verify indirectly: if domain has a result, it should NOT
-	// appear in unverified domains).
+	// underlying queries. If domain has a result, it should NOT appear in
+	// unverified domains.
 
 	// Insert a candidate for example.com so it would appear if not verified.
 	if err := db.InsertCandidates(ctx, []discovery.Candidate{

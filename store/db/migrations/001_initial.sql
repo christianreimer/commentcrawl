@@ -10,8 +10,6 @@ CREATE TABLE IF NOT EXISTS results (
     comments_endpoint  INTEGER NOT NULL DEFAULT 0,
     comment_count_hint INTEGER NOT NULL DEFAULT 0,
     api_root           TEXT NOT NULL DEFAULT '',
-    disqus_detected    INTEGER NOT NULL DEFAULT 0,
-    disqus_shortname   TEXT NOT NULL DEFAULT '',
     error              TEXT NOT NULL DEFAULT ''
 );
 

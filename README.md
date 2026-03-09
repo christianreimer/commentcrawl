@@ -76,7 +76,7 @@ Results are stored in a SQLite database (`commentcrawl.db` by default) with four
 ## Using as a Library
 
 ```bash
-go get github.com/creimer/commentcrawl
+go get github.com/christianreimer/commentcrawl
 ```
 
 ### Discover WordPress domains from Common Crawl
@@ -89,7 +89,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/creimer/commentcrawl/discovery"
+	"github.com/christianreimer/commentcrawl/discovery"
 )
 
 func main() {
@@ -121,7 +121,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/creimer/commentcrawl/discovery/wat"
+	"github.com/christianreimer/commentcrawl/discovery/wat"
 )
 
 func main() {
@@ -154,7 +154,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/creimer/commentcrawl/verification"
+	"github.com/christianreimer/commentcrawl/verification"
 )
 
 func main() {
@@ -186,7 +186,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/creimer/commentcrawl/verification"
+	"github.com/christianreimer/commentcrawl/verification"
 )
 
 func main() {

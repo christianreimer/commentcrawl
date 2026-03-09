@@ -11,9 +11,9 @@ import (
 
 const listConfirmedResults = `-- name: ListConfirmedResults :many
 SELECT domain, wp_confirmed, comments_endpoint, comment_count_hint,
-       api_root, disqus_detected, disqus_shortname, error
+       api_root, error
 FROM results
-WHERE comments_endpoint = 1 OR disqus_detected = 1
+WHERE comments_endpoint = 1
 ORDER BY comment_count_hint DESC
 `
 
@@ -32,8 +32,6 @@ func (q *Queries) ListConfirmedResults(ctx context.Context) ([]Result, error) {
 			&i.CommentsEndpoint,
 			&i.CommentCountHint,
 			&i.ApiRoot,
-			&i.DisqusDetected,
-			&i.DisqusShortname,
 			&i.Error,
 		); err != nil {
 			return nil, err
@@ -51,7 +49,7 @@ func (q *Queries) ListConfirmedResults(ctx context.Context) ([]Result, error) {
 
 const listResults = `-- name: ListResults :many
 SELECT domain, wp_confirmed, comments_endpoint, comment_count_hint,
-       api_root, disqus_detected, disqus_shortname, error
+       api_root, error
 FROM results
 ORDER BY comment_count_hint DESC
 `
@@ -71,8 +69,6 @@ func (q *Queries) ListResults(ctx context.Context) ([]Result, error) {
 			&i.CommentsEndpoint,
 			&i.CommentCountHint,
 			&i.ApiRoot,
-			&i.DisqusDetected,
-			&i.DisqusShortname,
 			&i.Error,
 		); err != nil {
 			return nil, err
@@ -91,8 +87,8 @@ func (q *Queries) ListResults(ctx context.Context) ([]Result, error) {
 const upsertResult = `-- name: UpsertResult :exec
 INSERT OR REPLACE INTO results
     (domain, wp_confirmed, comments_endpoint, comment_count_hint,
-     api_root, disqus_detected, disqus_shortname, error)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     api_root, error)
+VALUES (?, ?, ?, ?, ?, ?)
 `
 
 type UpsertResultParams struct {
@@ -101,8 +97,6 @@ type UpsertResultParams struct {
 	CommentsEndpoint int64  `json:"comments_endpoint"`
 	CommentCountHint int64  `json:"comment_count_hint"`
 	ApiRoot          string `json:"api_root"`
-	DisqusDetected   int64  `json:"disqus_detected"`
-	DisqusShortname  string `json:"disqus_shortname"`
 	Error            string `json:"error"`
 }
 
@@ -113,8 +107,6 @@ func (q *Queries) UpsertResult(ctx context.Context, arg UpsertResultParams) erro
 		arg.CommentsEndpoint,
 		arg.CommentCountHint,
 		arg.ApiRoot,
-		arg.DisqusDetected,
-		arg.DisqusShortname,
 		arg.Error,
 	)
 	return err

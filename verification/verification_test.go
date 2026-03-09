@@ -14,69 +14,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// detectDisqus
-// ---------------------------------------------------------------------------
-
-func TestDetectDisqus(t *testing.T) {
-	tests := []struct {
-		name string
-		html string
-		want string
-	}{
-		{
-			name: "embed.js script tag",
-			html: `<script src="//myblog.disqus.com/embed.js"></script>`,
-			want: "myblog",
-		},
-		{
-			name: "disqus_shortname single quotes",
-			html: `var disqus_shortname = 'cool-site';`,
-			want: "cool-site",
-		},
-		{
-			name: "disqus_shortname double quotes",
-			html: `var disqus_shortname = "another_site";`,
-			want: "another_site",
-		},
-		{
-			name: "embed.js takes priority over shortname var",
-			html: `<script src="//primary.disqus.com/embed.js"></script>
-			        var disqus_shortname = 'secondary';`,
-			want: "primary",
-		},
-		{
-			name: "no disqus at all",
-			html: `<html><body>Hello world</body></html>`,
-			want: "",
-		},
-		{
-			name: "empty string",
-			html: "",
-			want: "",
-		},
-		{
-			name: "disqus mentioned in text but not matching pattern",
-			html: `<p>Check out disqus.com for commenting solutions</p>`,
-			want: "",
-		},
-		{
-			name: "hyphenated shortname in embed.js",
-			html: `<script src="//my-cool-blog.disqus.com/embed.js"></script>`,
-			want: "my-cool-blog",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := detectDisqus(tc.html)
-			if got != tc.want {
-				t.Errorf("detectDisqus() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // extractTitle
 // ---------------------------------------------------------------------------
 
@@ -424,9 +361,9 @@ func TestCheckDomain_WPWithComments(t *testing.T) {
 	}
 }
 
-func TestCheckDomain_DisqusOnly(t *testing.T) {
+func TestCheckDomain_NoWP(t *testing.T) {
 	handler := newWPHandler(wpHandlerOpts{
-		homeBody: `<html><script src="//myblog.disqus.com/embed.js"></script></html>`,
+		homeBody: `<html><body>Just a regular site</body></html>`,
 	})
 	addr, cleanup := startDualServer(t, handler)
 	defer cleanup()
@@ -436,11 +373,8 @@ func TestCheckDomain_DisqusOnly(t *testing.T) {
 	if result.WPConfirmed {
 		t.Error("expected WPConfirmed=false")
 	}
-	if !result.DisqusDetected {
-		t.Errorf("expected DisqusDetected=true, error=%q", result.Error)
-	}
-	if result.DisqusShortname != "myblog" {
-		t.Errorf("DisqusShortname = %q, want %q", result.DisqusShortname, "myblog")
+	if result.Error == "" {
+		t.Error("expected non-empty Error for non-WP site")
 	}
 }
 
@@ -486,30 +420,6 @@ func TestCheckDomain_Unreachable(t *testing.T) {
 	}
 }
 
-func TestCheckDomain_WPAndDisqus(t *testing.T) {
-	handler := newWPHandler(wpHandlerOpts{
-		linkHeader:   `<http://example.com/wp-json/>; rel="https://api.w.org"`,
-		homeBody:     `<html><script src="//combined.disqus.com/embed.js"></script></html>`,
-		commentsJSON: `[{"id":1,"post":5}]`,
-		wpTotal:      "10",
-		postJSON:     `{"link":"http://example.com/post","title":{"rendered":"Post"}}`,
-	})
-	addr, cleanup := startDualServer(t, handler)
-	defer cleanup()
-
-	result, _ := CheckDomain(context.Background(), addr, Options{Timeout: 5 * time.Second})
-
-	if !result.WPConfirmed {
-		t.Errorf("expected WPConfirmed=true, error=%q", result.Error)
-	}
-	if !result.DisqusDetected {
-		t.Error("expected DisqusDetected=true")
-	}
-	if result.DisqusShortname != "combined" {
-		t.Errorf("DisqusShortname = %q, want %q", result.DisqusShortname, "combined")
-	}
-}
-
 func TestCheckDomain_Comments401(t *testing.T) {
 	handler := newWPHandler(wpHandlerOpts{
 		linkHeader:     `<http://example.com/wp-json/>; rel="https://api.w.org"`,
@@ -545,9 +455,9 @@ func TestVerifyAll(t *testing.T) {
 	}))
 	defer cleanup1()
 
-	// Server 2: Disqus-only site
+	// Server 2: Non-WP site
 	addr2, cleanup2 := startDualServer(t, newWPHandler(wpHandlerOpts{
-		homeBody: `<html><script src="//testsite.disqus.com/embed.js"></script></html>`,
+		homeBody: `<html><body>Regular site</body></html>`,
 	}))
 	defer cleanup2()
 
@@ -588,9 +498,6 @@ func TestVerifyAll(t *testing.T) {
 		t.Errorf("server1: expected CommentsEndpoint=true, error=%q", rm[addr1].Error)
 	}
 
-	if !rm[addr2].DisqusDetected {
-		t.Errorf("server2: expected DisqusDetected=true, error=%q", rm[addr2].Error)
-	}
 	if rm[addr2].WPConfirmed {
 		t.Errorf("server2: expected WPConfirmed=false")
 	}

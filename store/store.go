@@ -8,9 +8,9 @@ import (
 	_ "embed"
 	"fmt"
 
-	"github.com/creimer/commentcrawl/discovery"
-	"github.com/creimer/commentcrawl/store/db"
-	"github.com/creimer/commentcrawl/verification"
+	"github.com/christianreimer/commentcrawl/discovery"
+	"github.com/christianreimer/commentcrawl/store/db"
+	"github.com/christianreimer/commentcrawl/verification"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -88,8 +88,6 @@ func (d *DB) InsertResults(ctx context.Context, results []verification.Result) e
 			CommentsEndpoint: boolToInt64(r.CommentsEndpoint),
 			CommentCountHint: int64(r.CommentCountHint),
 			ApiRoot:          r.APIRoot,
-			DisqusDetected:   boolToInt64(r.DisqusDetected),
-			DisqusShortname:  r.DisqusShortname,
 			Error:            r.Error,
 		}); err != nil {
 			return err
@@ -143,8 +141,7 @@ func (d *DB) InsertDisqusCandidates(ctx context.Context, candidates []DisqusCand
 	return tx.Commit()
 }
 
-// ReadUnverifiedDomains returns candidate domains (from both WP and Disqus
-// discovery) that have no result row yet.
+// ReadUnverifiedDomains returns WP candidate domains that have no result row yet.
 func (d *DB) ReadUnverifiedDomains(ctx context.Context) ([]string, error) {
 	return d.queries.ListUnverifiedDomains(ctx)
 }

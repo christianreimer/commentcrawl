@@ -55,15 +55,11 @@ func (q *Queries) ListCandidates(ctx context.Context) ([]WpCandidate, error) {
 }
 
 const listUnverifiedDomains = `-- name: ListUnverifiedDomains :many
-SELECT ac.domain
-FROM (
-    SELECT domain FROM wp_candidates
-    UNION
-    SELECT domain FROM disqus_candidates
-) AS ac
-LEFT JOIN results r ON ac.domain = r.domain
+SELECT c.domain
+FROM wp_candidates c
+LEFT JOIN results r ON c.domain = r.domain
 WHERE r.domain IS NULL
-ORDER BY ac.domain
+ORDER BY c.domain
 `
 
 func (q *Queries) ListUnverifiedDomains(ctx context.Context) ([]string, error) {

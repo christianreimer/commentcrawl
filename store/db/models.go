@@ -25,8 +25,6 @@ type Result struct {
 	CommentsEndpoint int64  `json:"comments_endpoint"`
 	CommentCountHint int64  `json:"comment_count_hint"`
 	ApiRoot          string `json:"api_root"`
-	DisqusDetected   int64  `json:"disqus_detected"`
-	DisqusShortname  string `json:"disqus_shortname"`
 	Error            string `json:"error"`
 }
 

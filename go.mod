@@ -1,4 +1,4 @@
-module github.com/creimer/commentcrawl
+module github.com/christianreimer/commentcrawl
 
 go 1.25.0
 

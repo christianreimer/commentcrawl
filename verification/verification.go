@@ -1,6 +1,6 @@
 // Package verification implements Stage 2 of the WordPress comment finder
-// pipeline: live-checking candidate domains for WordPress REST API endpoints,
-// Disqus embeds, and discovering pages with comments.
+// pipeline: live-checking candidate domains for WordPress REST API endpoints
+// and discovering pages with comments.
 package verification
 
 import (
@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,12 +22,6 @@ const (
 	maxBodyLen = 512 * 1024 // 512KB cap for HTML body reads
 )
 
-// Disqus detection patterns.
-var (
-	disqusEmbedRe     = regexp.MustCompile(`//(\w[\w-]*)\.disqus\.com/embed\.js`)
-	disqusShortnameRe = regexp.MustCompile(`disqus_shortname\s*=\s*['"](\w[\w-]*)['"]`)
-)
-
 // Result is the per-domain verification outcome.
 type Result struct {
 	Domain           string
@@ -36,8 +29,6 @@ type Result struct {
 	CommentsEndpoint bool
 	CommentCountHint int
 	APIRoot          string
-	DisqusDetected   bool
-	DisqusShortname  string
 	Error            string
 }
 
@@ -85,125 +76,93 @@ func newClient(timeout time.Duration) *http.Client {
 	}
 }
 
-// probeResult holds the output of probing a domain's homepage.
-type probeResult struct {
-	linkHeader string // Link response header value
-	htmlBody   string // HTML body (up to maxBodyLen), empty if only HEAD succeeded
-	err        error
-}
-
-// probeDomain does HEAD then GET on the domain to extract the Link header
-// and (when a GET is performed) the HTML body for Disqus detection.
-func probeDomain(ctx context.Context, client *http.Client, baseURL, userAgent string) probeResult {
+// probeDomain does HEAD then GET on the domain to extract the Link header.
+// Returns (linkHeader, error).
+func probeDomain(ctx context.Context, client *http.Client, baseURL, userAgent string) (string, error) {
 	// Try HEAD first
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, baseURL, nil)
 	if err != nil {
-		return probeResult{err: err}
+		return "", err
 	}
 	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return probeResult{err: err}
+		return "", err
 	}
 	resp.Body.Close()
 
 	linkHeader := resp.Header.Get("Link")
 	if strings.Contains(linkHeader, wpAPIRel) {
-		// HEAD found WP. Issue a GET too so we can scan body for Disqus.
-		body := fetchBody(ctx, client, baseURL, userAgent)
-		return probeResult{linkHeader: linkHeader, htmlBody: body}
+		return linkHeader, nil
 	}
 
 	// HEAD didn't find WP Link header — try GET (some servers block HEAD)
-	body, getLink, err := fetchBodyAndLink(ctx, client, baseURL, userAgent)
+	linkHeader, err = fetchLinkHeader(ctx, client, baseURL, userAgent)
 	if err != nil {
-		return probeResult{err: err}
+		return "", err
 	}
-	return probeResult{linkHeader: getLink, htmlBody: body}
+	return linkHeader, nil
 }
 
-// fetchBody does a GET and returns the body text (up to maxBodyLen).
-func fetchBody(ctx context.Context, client *http.Client, url, userAgent string) string {
+// fetchLinkHeader does a GET and returns the Link header value.
+func fetchLinkHeader(ctx context.Context, client *http.Client, url, userAgent string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyLen))
-	return string(data)
-}
-
-// fetchBodyAndLink does a GET and returns (body, linkHeader, error).
-func fetchBodyAndLink(ctx context.Context, client *http.Client, url, userAgent string) (string, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("User-Agent", userAgent)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyLen))
-	return string(data), resp.Header.Get("Link"), nil
+	// Drain body to allow connection reuse
+	io.Copy(io.Discard, io.LimitReader(resp.Body, maxBodyLen))
+	return resp.Header.Get("Link"), nil
 }
 
 // discoverAPIRoot probes a domain for a WordPress API root URL.
-// Also returns the HTML body (when available) for Disqus detection.
-// Returns (apiRoot, errorString, htmlBody).
-func discoverAPIRoot(ctx context.Context, client *http.Client, domain, userAgent string) (string, string, string) {
+// Returns (apiRoot, errorString).
+func discoverAPIRoot(ctx context.Context, client *http.Client, domain, userAgent string) (string, string) {
 	baseURL := "https://" + domain
 
-	pr := probeDomain(ctx, client, baseURL, userAgent)
-	if pr.err != nil {
+	linkHeader, err := probeDomain(ctx, client, baseURL, userAgent)
+	if err != nil {
 		// Check for TLS error — try HTTP fallback
-		if isTLSError(pr.err) {
+		if isTLSError(err) {
 			httpBase := "http://" + domain
-			body, linkHeader, err := fetchBodyAndLink(ctx, client, httpBase, userAgent)
+			linkHeader, err := fetchLinkHeader(ctx, client, httpBase, userAgent)
 			if err != nil {
-				return "", fmt.Sprintf("SSL error + fallback failed: %v", err), ""
+				return "", fmt.Sprintf("SSL error + fallback failed: %v", err)
 			}
 
-			apiRoot := ""
 			if strings.Contains(linkHeader, wpAPIRel) {
-				apiRoot = httpBase + "/wp-json/"
+				return httpBase + "/wp-json/", ""
 			}
-			// Even if WP not found, return body for Disqus check
-			if apiRoot == "" {
-				return "", "SSL error, no WordPress API header", body
-			}
-			return apiRoot, "", body
+			return "", "SSL error, no WordPress API header"
 		}
-		return "", pr.err.Error(), ""
+		return "", err.Error()
 	}
 
-	if !strings.Contains(pr.linkHeader, wpAPIRel) {
-		return "", "no WordPress API header", pr.htmlBody
+	if !strings.Contains(linkHeader, wpAPIRel) {
+		return "", "no WordPress API header"
 	}
 
 	// Extract API root from Link header
-	for _, part := range strings.Split(pr.linkHeader, ",") {
+	for _, part := range strings.Split(linkHeader, ",") {
 		part = strings.TrimSpace(part)
 		if strings.Contains(part, wpAPIRel) && strings.HasPrefix(part, "<") {
 			idx := strings.Index(part, ">")
 			if idx > 1 {
-				return part[1:idx], "", pr.htmlBody
+				return part[1:idx], ""
 			}
 		}
 	}
 
-	return baseURL + "/wp-json/", "", pr.htmlBody
+	return baseURL + "/wp-json/", ""
 }
 
 func isTLSError(err error) bool {
@@ -212,18 +171,6 @@ func isTLSError(err error) bool {
 	}
 	errStr := err.Error()
 	return strings.Contains(errStr, "tls:") || strings.Contains(errStr, "certificate")
-}
-
-// detectDisqus scans HTML for Disqus embed patterns and returns the shortname,
-// or empty string if not found.
-func detectDisqus(html string) string {
-	if m := disqusEmbedRe.FindStringSubmatch(html); len(m) > 1 {
-		return m[1]
-	}
-	if m := disqusShortnameRe.FindStringSubmatch(html); len(m) > 1 {
-		return m[1]
-	}
-	return ""
 }
 
 // fetchTopCommentedPages fetches comments, collects unique post IDs, then
@@ -335,22 +282,14 @@ func extractTitle(raw json.RawMessage) string {
 	return ""
 }
 
-// CheckDomain probes a single domain for WordPress comments and Disqus embeds.
+// CheckDomain probes a single domain for WordPress comments.
 func CheckDomain(ctx context.Context, domain string, opts Options) (Result, []Page) {
 	opts.defaults()
 	client := newClient(opts.Timeout)
 
 	result := Result{Domain: domain}
 
-	apiRoot, errMsg, htmlBody := discoverAPIRoot(ctx, client, domain, opts.UserAgent)
-
-	// Check for Disqus regardless of whether WordPress was detected
-	if htmlBody != "" {
-		if shortname := detectDisqus(htmlBody); shortname != "" {
-			result.DisqusDetected = true
-			result.DisqusShortname = shortname
-		}
-	}
+	apiRoot, errMsg := discoverAPIRoot(ctx, client, domain, opts.UserAgent)
 
 	if apiRoot == "" {
 		result.Error = errMsg
@@ -461,17 +400,13 @@ func VerifyAll(ctx context.Context, domains []string, opts Options, onResult fun
 	wg.Wait()
 
 	wpConfirmed := 0
-	disqusFound := 0
 	for _, r := range results {
 		if r.CommentsEndpoint {
 			wpConfirmed++
 		}
-		if r.DisqusDetected {
-			disqusFound++
-		}
 	}
 	slog.Info("Stage 2 complete",
-		"wp_comments", wpConfirmed, "disqus", disqusFound,
+		"wp_comments", wpConfirmed,
 		"total", len(domains), "pages_found", len(allPages))
 
 	return results, allPages
