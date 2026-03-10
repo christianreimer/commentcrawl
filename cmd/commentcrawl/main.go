@@ -17,6 +17,7 @@ func main() {
 	root.AddCommand(discoverDisqusCmd())
 	root.AddCommand(verifyCmd())
 	root.AddCommand(runCmd())
+	root.AddCommand(exportCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

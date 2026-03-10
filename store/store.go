@@ -207,6 +207,40 @@ func (d *DB) ReadUnverifiedDomains(ctx context.Context) ([]string, error) {
 	return d.queries.ListUnverifiedDomains(ctx)
 }
 
+// ExportRow holds a single row for Parquet export.
+type ExportRow struct {
+	Hostname         string
+	DisqusShortname  *string
+	CommentCountHint *int64
+}
+
+// ReadExportRows returns Disqus candidates and verified WordPress sites for export.
+func (d *DB) ReadExportRows(ctx context.Context) ([]ExportRow, error) {
+	rows, err := d.conn.QueryContext(ctx, `
+		SELECT hostname, disqus_shortname, NULL AS comment_count_hint
+		FROM disqus_candidates
+		UNION ALL
+		SELECT wc.hostname, NULL AS disqus_shortname, r.comment_count_hint
+		FROM results r
+		JOIN wp_candidates wc ON wc.domain = r.domain
+		WHERE r.wp_confirmed = 1 AND r.comments_endpoint = 1 AND r.comment_count_hint > 1
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ExportRow
+	for rows.Next() {
+		var r ExportRow
+		if err := rows.Scan(&r.Hostname, &r.DisqusShortname, &r.CommentCountHint); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func boolToInt64(b bool) int64 {
 	if b {
 		return 1
