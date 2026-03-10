@@ -48,8 +48,8 @@ func (o *Options) defaults() {
 	if o.Crawl == "" {
 		o.Crawl = "CC-MAIN-2024-22"
 	}
-	if o.MaxPartitions <= 0 {
-		o.MaxPartitions = 100
+	if o.MaxPartitions < 0 {
+		o.MaxPartitions = 0
 	}
 	if o.Workers <= 0 {
 		o.Workers = 3
