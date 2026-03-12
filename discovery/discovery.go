@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	_ "github.com/marcboeker/go-duckdb"
 )
@@ -24,15 +25,37 @@ type Candidate struct {
 	SampleURL string
 }
 
+// PartitionResult holds the outcome of scanning a single partition.
+type PartitionResult struct {
+	Index      int
+	URL        string
+	Candidates []Candidate
+	Err        error
+}
+
 // Options controls Stage 1 behavior.
 type Options struct {
-	Crawl         string // Common Crawl crawl ID, e.g. "CC-MAIN-2024-22"
-	MaxPartitions int    // Number of parquet partitions to scan
+	Crawl         string        // Common Crawl crawl ID, e.g. "CC-MAIN-2024-22"
+	MaxPartitions int           // Number of parquet partitions to scan
+	Offset        int           // Partition index to start from (for resume)
+	Delay         time.Duration // Delay between partition queries
+}
+
+const maxRetries = 3
+
+// retryBackoff returns an exponential backoff duration: 5s, 15s, 45s.
+func retryBackoff(attempt int) time.Duration {
+	d := 5 * time.Second
+	for range attempt {
+		d *= 3
+	}
+	return d
 }
 
 // FetchParquetURLs downloads the cc-index-table.paths.gz manifest for a crawl
-// and returns up to maxPartitions HTTPS URLs for the warc subset parquet files.
-func FetchParquetURLs(ctx context.Context, crawl string, maxPartitions int) ([]string, error) {
+// and returns up to maxPartitions HTTPS URLs for the warc subset parquet files,
+// starting from the given offset.
+func FetchParquetURLs(ctx context.Context, crawl string, maxPartitions, offset int) ([]string, error) {
 	manifestURL := fmt.Sprintf(
 		"https://data.commoncrawl.org/crawl-data/%s/cc-index-table.paths.gz",
 		crawl,
@@ -79,8 +102,14 @@ func FetchParquetURLs(ctx context.Context, crawl string, maxPartitions int) ([]s
 
 	sort.Strings(warcPaths)
 
+	if offset >= len(warcPaths) {
+		slog.Info("All partitions already scanned", "total", len(warcPaths), "offset", offset)
+		return nil, nil
+	}
+	warcPaths = warcPaths[offset:]
+
 	n := maxPartitions
-	if n > len(warcPaths) {
+	if n <= 0 || n > len(warcPaths) {
 		n = len(warcPaths)
 	}
 
@@ -88,18 +117,22 @@ func FetchParquetURLs(ctx context.Context, crawl string, maxPartitions int) ([]s
 	for i := 0; i < n; i++ {
 		urls[i] = "https://data.commoncrawl.org/" + warcPaths[i]
 	}
-	slog.Info("Found warc partitions", "total", len(warcPaths), "using", n)
+	slog.Info("Found warc partitions", "total", len(warcPaths)+offset, "offset", offset, "using", n)
 	return urls, nil
 }
 
 // Discover queries Common Crawl parquet files via DuckDB over HTTPS and returns
 // deduplicated WordPress candidate domains. The onPartition callback is invoked
-// after each partition completes with the partition index, total count, and
-// number of candidates found in that partition.
-func Discover(ctx context.Context, opts Options, onPartition func(i, total, found int)) ([]Candidate, error) {
-	urls, err := FetchParquetURLs(ctx, opts.Crawl, opts.MaxPartitions)
+// after each partition completes with the result for that partition.
+func Discover(ctx context.Context, opts Options, onPartition func(result PartitionResult, total int)) ([]Candidate, error) {
+	urls, err := FetchParquetURLs(ctx, opts.Crawl, opts.MaxPartitions, opts.Offset)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(urls) == 0 {
+		slog.Info("No partitions to scan")
+		return nil, nil
 	}
 
 	db, err := sql.Open("duckdb", "")
@@ -113,7 +146,7 @@ func Discover(ctx context.Context, opts Options, onPartition func(i, total, foun
 	}
 
 	slog.Info("Stage 1 — Querying Common Crawl columnar index",
-		"crawl", opts.Crawl, "partitions", len(urls))
+		"crawl", opts.Crawl, "partitions", len(urls), "offset", opts.Offset)
 
 	seen := make(map[string]Candidate)
 
@@ -122,12 +155,13 @@ func Discover(ctx context.Context, opts Options, onPartition func(i, total, foun
 			return nil, ctx.Err()
 		}
 
-		slog.Info("Scanning partition", "n", i+1, "total", len(urls), "url", url)
+		absIdx := opts.Offset + i
+		slog.Info("Scanning partition", "n", i+1, "total", len(urls), "index", absIdx, "url", url)
 
 		if strings.ContainsAny(url, `'";\`) {
 			slog.Warn("Skipping partition with suspicious URL", "url", url)
 			if onPartition != nil {
-				onPartition(i, len(urls), 0)
+				onPartition(PartitionResult{Index: absIdx, URL: url, Err: fmt.Errorf("suspicious URL")}, len(urls))
 			}
 			continue
 		}
@@ -149,40 +183,70 @@ func Discover(ctx context.Context, opts Options, onPartition func(i, total, foun
 			LIMIT 50000
 		`, url)
 
-		rows, err := db.QueryContext(ctx, query)
-		if err != nil {
-			slog.Warn("Partition failed", "n", i, "error", err)
+		var partCandidates []Candidate
+		var queryErr error
+
+		for attempt := range maxRetries {
+			rows, err := db.QueryContext(ctx, query)
+			if err != nil {
+				queryErr = err
+				backoff := retryBackoff(attempt)
+				slog.Warn("Partition query failed, retrying",
+					"index", absIdx, "attempt", attempt+1, "of", maxRetries,
+					"backoff", backoff, "error", err)
+				select {
+				case <-time.After(backoff):
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+
+			queryErr = nil
+			partCandidates = nil
+			for rows.Next() {
+				var c Candidate
+				var domain, hostname, sampleURL sql.NullString
+				if err := rows.Scan(&domain, &hostname, &sampleURL); err != nil {
+					slog.Warn("Row scan error", "error", err)
+					continue
+				}
+				if !domain.Valid || domain.String == "" {
+					continue
+				}
+				c.Domain = domain.String
+				c.Hostname = hostname.String
+				c.SampleURL = sampleURL.String
+
+				if _, exists := seen[c.Domain]; !exists {
+					seen[c.Domain] = c
+					partCandidates = append(partCandidates, c)
+				}
+			}
+			rows.Close()
+			break
+		}
+
+		if queryErr != nil {
+			slog.Warn("Partition failed after retries", "index", absIdx, "error", queryErr)
 			if onPartition != nil {
-				onPartition(i, len(urls), 0)
+				onPartition(PartitionResult{Index: absIdx, URL: url, Err: queryErr}, len(urls))
 			}
 			continue
 		}
 
-		found := 0
-		for rows.Next() {
-			var c Candidate
-			var domain, hostname, sampleURL sql.NullString
-			if err := rows.Scan(&domain, &hostname, &sampleURL); err != nil {
-				slog.Warn("Row scan error", "error", err)
-				continue
-			}
-			if !domain.Valid || domain.String == "" {
-				continue
-			}
-			c.Domain = domain.String
-			c.Hostname = hostname.String
-			c.SampleURL = sampleURL.String
-
-			if _, exists := seen[c.Domain]; !exists {
-				seen[c.Domain] = c
-				found++
-			}
-		}
-		rows.Close()
-
-		slog.Info("Partition results", "n", i+1, "found", found)
+		slog.Info("Partition results", "n", i+1, "index", absIdx, "found", len(partCandidates))
 		if onPartition != nil {
-			onPartition(i, len(urls), found)
+			onPartition(PartitionResult{Index: absIdx, URL: url, Candidates: partCandidates}, len(urls))
+		}
+
+		if opts.Delay > 0 && i < len(urls)-1 {
+			slog.Debug("Sleeping between partitions", "delay", opts.Delay)
+			select {
+			case <-time.After(opts.Delay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 	}
 

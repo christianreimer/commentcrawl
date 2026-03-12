@@ -46,7 +46,7 @@ Examples:
 			candidates, err := discovery.Discover(ctx, discovery.Options{
 				Crawl:         crawl,
 				MaxPartitions: partitions,
-			}, nil)
+			}, nil /*onPartition*/)
 			if err != nil {
 				return err
 			}

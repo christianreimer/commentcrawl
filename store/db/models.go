@@ -41,3 +41,11 @@ type WpCandidate struct {
 	Hostname  string `json:"hostname"`
 	SampleUrl string `json:"sample_url"`
 }
+
+type WpScanProgress struct {
+	Crawl           string `json:"crawl"`
+	PartitionIdx    int64  `json:"partition_idx"`
+	PartitionUrl    string `json:"partition_url"`
+	CandidatesFound int64  `json:"candidates_found"`
+	ScannedAt       string `json:"scanned_at"`
+}

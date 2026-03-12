@@ -202,6 +202,66 @@ func (d *DB) CountScannedPartitions(ctx context.Context, crawl string) (int, err
 	return int(cnt), nil
 }
 
+// InsertCandidatesWithProgress writes candidates and records WP scan progress
+// for a partition in a single transaction.
+func (d *DB) InsertCandidatesWithProgress(ctx context.Context, candidates []discovery.Candidate, crawl string, partitionIdx int, partitionURL string) error {
+	tx, err := d.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	q := d.queries.WithTx(tx)
+	for _, c := range candidates {
+		if err := q.InsertCandidate(ctx, db.InsertCandidateParams{
+			Domain:    c.Domain,
+			Hostname:  c.Hostname,
+			SampleUrl: c.SampleURL,
+		}); err != nil {
+			return err
+		}
+	}
+
+	if err := q.InsertWPScanProgress(ctx, db.InsertWPScanProgressParams{
+		Crawl:           crawl,
+		PartitionIdx:    int64(partitionIdx),
+		PartitionUrl:    partitionURL,
+		CandidatesFound: int64(len(candidates)),
+	}); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// RecordWPScanProgress records that a WP partition was scanned (even if it found nothing or failed).
+func (d *DB) RecordWPScanProgress(ctx context.Context, crawl string, partitionIdx int, partitionURL string, found int) error {
+	return d.queries.InsertWPScanProgress(ctx, db.InsertWPScanProgressParams{
+		Crawl:           crawl,
+		PartitionIdx:    int64(partitionIdx),
+		PartitionUrl:    partitionURL,
+		CandidatesFound: int64(found),
+	})
+}
+
+// GetMaxWPScannedPartition returns the highest WP partition index scanned for a crawl, or -1 if none.
+func (d *DB) GetMaxWPScannedPartition(ctx context.Context, crawl string) (int, error) {
+	maxIdx, err := d.queries.GetMaxWPScannedPartition(ctx, crawl)
+	if err != nil {
+		return -1, err
+	}
+	return int(maxIdx), nil
+}
+
+// CountWPScannedPartitions returns the number of WP partitions scanned for a crawl.
+func (d *DB) CountWPScannedPartitions(ctx context.Context, crawl string) (int, error) {
+	cnt, err := d.queries.CountWPScannedPartitions(ctx, crawl)
+	if err != nil {
+		return 0, err
+	}
+	return int(cnt), nil
+}
+
 // ReadUnverifiedDomains returns WP candidate domains that have no result row yet.
 func (d *DB) ReadUnverifiedDomains(ctx context.Context) ([]string, error) {
 	return d.queries.ListUnverifiedDomains(ctx)
